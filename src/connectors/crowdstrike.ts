@@ -47,6 +47,9 @@ export class CrowdStrikeConnector {
     if (applicationIds.length === 0) return [];
 
     const applications = await this.getApplicationEntities(applicationIds);
+    if (applications.length !== applicationIds.length || applications.some(app => !getHostId(app))) {
+      throw new Error('Falcon returned incomplete application or host identifiers.');
+    }
     const hostIds = [...new Set(applications.map(getHostId).filter((id): id is string => Boolean(id)))];
     const hosts = await this.getHostEntities(hostIds);
     const hostById = new Map(hosts.map((host) => [String(host.device_id ?? host.id ?? ''), host]));
@@ -108,12 +111,14 @@ export class CrowdStrikeConnector {
     while (ids.length < safetyLimit) {
       const query = new URLSearchParams({ filter, limit: String(pageSize), offset: String(offset) });
       const envelope = await this.request(`/discover/queries/applications/v1?${query}`);
+      if (envelope.errors?.length) throw new Error('Falcon Discover returned application search errors.');
       const page = envelope.resources.map(String);
       ids.push(...page);
       if (page.length < pageSize) break;
       offset += page.length;
     }
-    return ids.slice(0, safetyLimit);
+    if (ids.length >= safetyLimit) throw new Error('Falcon result limit reached. Application coverage is incomplete.');
+    return ids;
   }
 
   private async getApplicationEntities(ids: string[]): Promise<Record<string, unknown>[]> {

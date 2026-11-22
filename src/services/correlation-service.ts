@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { matchVersion } from '../domain/version-match.js';
 import type { DatabasePool } from '../db/pool.js';
 import type { AppConfig } from '../config.js';
 import type { CrowdStrikeConnector } from '../connectors/crowdstrike.js';
@@ -18,7 +19,11 @@ export class CorrelationService {
     const allMatches = [];
     for (const affected of distinctProducts(record.affected)) {
       const matches = await this.crowdStrike.searchApplications({ name: affected.product, vendor: usableVendor(affected.vendor) });
-      allMatches.push(...matches.map((match) => ({ ...match, affected })));
+      allMatches.push(...matches.filter(match =>
+        match.name.trim().toLowerCase() === affected.product.trim().toLowerCase()
+        && (!usableVendor(affected.vendor) || match.vendor?.trim().toLowerCase() === affected.vendor?.trim().toLowerCase())
+        && matchVersion(affected, match.version) === 'AFFECTED'
+      ).map((match) => ({ ...match, affected })));
     }
 
     for (const match of allMatches) {

@@ -5,6 +5,8 @@ import type { CrowdStrikeConnector } from '../connectors/crowdstrike.js';
 import type { FeedService } from '../services/feed-service.js';
 import { DashboardService } from '../services/dashboard-service.js';
 import type { CveIngestionService } from '../services/cve-ingestion-service.js';
+import type { AssessmentService } from '../services/assessment.js';
+import { cveIdPattern, fetchCveDelta } from '../connectors/cve-feed.js';
 
 const crowdStrikeSearchSchema = z.object({
   name: z.string().min(1).max(200),
@@ -22,7 +24,7 @@ const claimSchema = z.object({
 
 export async function registerApiRoutes(
   app: FastifyInstance,
-  dependencies: { db: DatabasePool; crowdStrike: CrowdStrikeConnector; feeds: FeedService; cves: CveIngestionService }
+  dependencies: { db: DatabasePool; crowdStrike: CrowdStrikeConnector; feeds: FeedService; cves: CveIngestionService; assessments: AssessmentService }
 ) {
   const dashboard = new DashboardService(dependencies.db);
 
@@ -32,6 +34,26 @@ export async function registerApiRoutes(
   });
 
   app.get('/api/v1/dashboard/overview', async () => dashboard.overview());
+  app.get('/api/v1/cve-feed', async () => fetchCveDelta());
+  app.get('/api/v1/dashboard/assets', async () => (await dependencies.db.query(
+    `SELECT m.cve_id AS "cveId", m.application_name AS product, m.installed_version AS version,
+       COALESCE(h.hostname,m.host_id) AS host, m.observed_at AS "observedAt"
+     FROM application_matches m LEFT JOIN hosts h ON h.source=m.source AND h.host_id=m.host_id
+     ORDER BY m.observed_at DESC LIMIT 100`)).rows);
+  app.get('/api/v1/dashboard/deliveries', async () => (await dependencies.db.query(
+    `SELECT a.cve_id AS "cveId", d.consumer_id AS consumer, d.status, d.attempts, d.created_at AS "createdAt"
+     FROM alert_deliveries d JOIN alerts a ON a.id=d.alert_id ORDER BY d.created_at DESC LIMIT 100`)).rows);
+  app.post('/api/v1/assessments', async (request, reply) => {
+    const input = z.object({ cveId: z.string().trim().toUpperCase().regex(cveIdPattern) }).safeParse(request.body);
+    if (!input.success) return reply.code(400).send({ message: 'Enter a valid CVE ID.' });
+    const run = dependencies.assessments.start(input.data.cveId);
+    if (!run) return reply.code(409).send({ message: 'An assessment is already running.' });
+    return reply.code(202).send(run);
+  });
+  app.get<{ Params: { id: string } }>('/api/v1/assessments/:id', async (request, reply) => {
+    const run = dependencies.assessments.get(request.params.id);
+    return run ?? reply.code(404).send({ message: 'Assessment expired or the service restarted.' });
+  });
 
   app.get('/api/v1/connectors', async () => ({
     crowdStrike: {

@@ -1,4 +1,4 @@
-# Sentinel Advisory
+# Vulnerability Advisory
 
 Enterprise vulnerability intelligence and advisory automation for Node.js, PostgreSQL, CrowdStrike Falcon, CISA KEV, FIRST EPSS, NVD, and CVE List V5.
 
@@ -38,11 +38,13 @@ npm run dev
 
 Environment values are read from the process environment. Load `.env` through your Windows service/secret-management mechanism; the application deliberately does not commit or print secrets.
 
-The dashboard is served by Vite at `http://127.0.0.1:5173` during development. Add `?demo=1` to preview the interface without a database. The API listens on `http://127.0.0.1:4100`.
+The dashboard is served by Vite at `http://127.0.0.1:5173` during development. The API listens on `http://127.0.0.1:4100`. Open **Assessment** and run the prefilled CVE to see actual feed, score, CrowdStrike and version results. Assessment runs preview the alert decision without writing to PostgreSQL or queuing mail.
 
 ## CVE List checkout
 
-Clone the upstream repository outside this project and set `CVE_REPO_PATH` to its absolute path:
+Leave `CVE_REPO_PATH` blank or set it to `https://github.com/CVEProject/cvelistV5/tree/main/cves` to poll the latest upstream delta. The browser refreshes that view every 15 seconds and the API caches the upstream response for up to one minute. Background processing uses `CVE_CRON`. The latest delta does not backfill missed batches.
+
+For commit-based catch-up, clone the upstream repository outside this project and set `CVE_REPO_PATH` to its absolute path:
 
 ```powershell
 git clone --filter=blob:none https://github.com/CVEProject/cvelistV5.git C:\SecurityData\cvelistV5

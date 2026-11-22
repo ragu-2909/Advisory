@@ -2,6 +2,7 @@ module.exports = {
   apps: [{
     name: 'advisory-automation',
     script: './dist/server/src/index.js',
+    node_args: '--env-file-if-exists=.env',
     cwd: __dirname,
     instances: 1,
     exec_mode: 'fork',

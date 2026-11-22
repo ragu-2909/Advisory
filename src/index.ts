@@ -12,6 +12,7 @@ import { registerApiRoutes } from './routes/api.js';
 import { CorrelationService } from './services/correlation-service.js';
 import { CveIngestionService } from './services/cve-ingestion-service.js';
 import { NvdConnector } from './connectors/nvd.js';
+import { AssessmentService } from './services/assessment.js';
 
 const config = loadConfig();
 const app = Fastify({ logger: { level: config.LOG_LEVEL, redact: ['req.headers.authorization', 'client_secret', 'CROWDSTRIKE_CLIENT_SECRET'] } });
@@ -23,7 +24,7 @@ const nvd = new NvdConnector(config);
 const cves = new CveIngestionService(db, config, correlation, nvd);
 
 await app.register(cors, { origin: config.NODE_ENV === 'development' ? true : false });
-await registerApiRoutes(app, { db, crowdStrike, feeds, cves });
+await registerApiRoutes(app, { db, crowdStrike, feeds, cves, assessments: new AssessmentService(crowdStrike, nvd) });
 
 if (config.NODE_ENV === 'production') {
   const publicDirectory = join(fileURLToPath(new URL('.', import.meta.url)), '../../public');
@@ -34,7 +35,7 @@ if (config.NODE_ENV === 'production') {
 if (config.ENABLE_SCHEDULERS) {
   cron.schedule(config.KEV_CRON, () => void feeds.syncKev().catch((error) => app.log.error(error, 'CISA KEV sync failed')));
   cron.schedule(config.EPSS_CRON, () => void feeds.refreshEpss().catch((error) => app.log.error(error, 'EPSS refresh failed')));
-  if (config.CVE_REPO_PATH) cron.schedule(config.CVE_CRON, () => void cves.sync().catch((error) => app.log.error(error, 'CVE List V5 sync failed')));
+  cron.schedule(config.CVE_CRON, () => void cves.sync().catch((error) => app.log.error(error, 'CVE List V5 sync failed')), { noOverlap: true });
 }
 
 const close = async () => { await app.close(); await db.end(); };
