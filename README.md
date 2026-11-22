@@ -40,6 +40,12 @@ Environment values are read from the process environment. Load `.env` through yo
 
 The dashboard is served by Vite at `http://127.0.0.1:5173` during development. The API listens on `http://127.0.0.1:4100`. Open **Assessment** and run the prefilled CVE to see actual feed, score, CrowdStrike and version results. Assessment runs preview the alert decision without writing to PostgreSQL or queuing mail.
 
+### Product research and CrowdStrike checks
+
+Use **Data sources → Check CrowdStrike authentication** to verify the OAuth client pair on the configured Falcon cloud. The result gives the API host and distinguishes OAuth rejection from Discover or Hosts errors reported during an assessment. PM2 process environment values take precedence over `.env` values, so check the service's injected configuration when an updated file appears to have no effect.
+
+Assessment lists products from CNA and ADP records, NVD software candidates, and verified downstream release evidence from referenced Node.js security advisories. Each lookup uses the product's own version rules. Ambiguous candidates remain under review. The first 20 products receive Falcon lookups per preview, with upstream-confirmed downstream applications prioritized and the rest labeled in the table. Background correlation applies the existing alert eligibility policy. The advisory reader supports Node.js today. Wider downstream coverage requires additional first-party advisory sources or a software bill of materials for the applications in your environment.
+
 ## CVE List checkout
 
 Leave `CVE_REPO_PATH` blank or set it to `https://github.com/CVEProject/cvelistV5/tree/main/cves` to poll the latest upstream delta. The browser refreshes that view every 15 seconds and the API caches the upstream response for up to one minute. Background processing uses `CVE_CRON`. The latest delta does not backfill missed batches.

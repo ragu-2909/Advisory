@@ -6,7 +6,7 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(4100),
   LOG_LEVEL: z.string().default('info'),
   DATABASE_URL: z.string().min(1).default('postgresql://advisory:advisory@localhost:5432/advisory'),
-  CROWDSTRIKE_BASE_URL: z.string().url().default('https://api.us-2.crowdstrike.com'),
+  CROWDSTRIKE_BASE_URL: z.string().trim().regex(/^https:\/\/api\.(?:crowdstrike\.com|us-2\.crowdstrike\.com|eu-1\.crowdstrike\.com|laggar\.gcw\.crowdstrike\.com|us-gov-2\.crowdstrike\.mil)\/?$/i).default('https://api.us-2.crowdstrike.com'),
   CROWDSTRIKE_CLIENT_ID: z.string().optional(),
   CROWDSTRIKE_CLIENT_SECRET: z.string().optional(),
   CROWDSTRIKE_HOST_CACHE_SECONDS: z.coerce.number().int().positive().default(900),

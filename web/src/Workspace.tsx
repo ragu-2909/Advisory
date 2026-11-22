@@ -7,6 +7,7 @@ type Run = {
   id: string; cveId: string; done: boolean;
   steps: Array<{ name: string; status: string; detail?: string }>;
   assets: Row[];
+  products?: Row[];
 };
 const views = [
   ['Assessment', Play], ['Overview', LayoutDashboard], ['Findings', FileWarning],
@@ -68,7 +69,9 @@ function Records({ title, rows, columns, onSelectCve, empty = 'No records to dis
       <tbody>{rows.map((row, index) => <tr key={index}>{columns.map(key => <td key={key}>{
         key === 'cveId' && onSelectCve && typeof row[key] === 'string'
           ? <button className="record-link" onClick={() => onSelectCve(String(row[key]))}>{row[key]}</button>
-          : row[key] == null ? '—' : String(row[key])
+          : key === 'source' && typeof row[key] === 'string' && row[key].startsWith('https://')
+            ? <a className="record-link" href={row[key]} target="_blank" rel="noreferrer">View evidence</a>
+            : row[key] == null ? '—' : String(row[key])
       }</td>)}</tr>)}</tbody>
     </table></div> : <p className="workspace-empty">{rows ? empty : 'Waiting for data…'}</p>}
   </section>;
@@ -76,12 +79,13 @@ function Records({ title, rows, columns, onSelectCve, empty = 'No records to dis
 
 export default function Workspace() {
   const [view, setView] = useState<View>('Assessment');
-  const [input, setInput] = useState('CVE-2026-11497');
+  const [input, setInput] = useState('CVE-2026-111497');
   const [initial, setInitial] = useState<Run>();
   const [starting, setStarting] = useState(false);
   const [failure, setFailure] = useState('');
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('All');
+  const [falconCheck, setFalconCheck] = useState<{ running: boolean; message?: string; failed?: boolean }>({ running: false });
   const assessment = usePolling<Run>(initial?.done ? undefined : initial && `assessments/${initial.id}`, 1000);
   const run = assessment.data ?? initial;
   useEffect(() => {
@@ -103,6 +107,16 @@ export default function Workspace() {
       }));
     } catch (error) { setFailure((error as Error).message); }
     finally { setStarting(false); }
+  }
+
+  async function checkFalcon() {
+    setFalconCheck({ running: true });
+    try {
+      const result = await api<{ status: string; baseUrl: string }>('connectors/crowdstrike/check', { method: 'POST' });
+      setFalconCheck({ running: false, message: `${result.status} with ${result.baseUrl}. Run an assessment to check inventory access.` });
+    } catch (error) {
+      setFalconCheck({ running: false, failed: true, message: (error as Error).message });
+    }
   }
 
   const findings = overview.data?.findings.filter(item =>
@@ -140,6 +154,7 @@ export default function Workspace() {
               <ol className="workflow">{run.steps.map((step, index) =>
                 <li key={index}><span className={`step-status ${step.status.toLowerCase()}`}>{step.status}</span><div><strong>{step.name}</strong>{step.detail && <p>{step.detail}</p>}</div></li>)}</ol>
             </section>
+            <Records title="Products and bundled dependencies" rows={run.products} columns={['product', 'relationship', 'versions', 'inventory', 'source']} empty="No product evidence yet. See the research steps above." />
             <Records title="Inventory evidence" rows={run.assets} columns={['product', 'version', 'host', 'result', 'exposure']} empty={run.done ? 'No inventory evidence returned. See the CrowdStrike step for coverage and errors.' : 'Waiting for CrowdStrike evidence…'} />
           </>}
         </>}
@@ -160,10 +175,12 @@ export default function Workspace() {
           <Records title="CVE List V5 changes" rows={feed.data?.records} onSelectCve={selectCve} columns={['cveId', 'change']} empty="The current upstream batch has no changes." />
           <Records title="Processing status" rows={overview.data?.feeds.map(item => ({ ...item }))} columns={['feed', 'status', 'completedAt', 'recordsProcessed', 'errorSummary']} />
         </>}
-        {view === 'Data sources' && <Records title="Connector configuration" rows={status.data && [
+        {view === 'Data sources' && <><div><button className="button primary" onClick={checkFalcon} disabled={falconCheck.running}>{falconCheck.running ? 'Checking…' : 'Check CrowdStrike authentication'}</button></div>
+          {falconCheck.message && <p className={`action-toast ${falconCheck.failed ? 'error' : 'success'}`} role="status">{falconCheck.message}</p>}
+          <Records title="Connector configuration" rows={status.data && [
           { source: 'CrowdStrike Falcon', region: status.data.crowdStrike.region, configuration: status.data.crowdStrike.configured ? 'Credentials loaded · run an assessment to check access' : 'Client ID or secret missing' },
           { source: 'CVE List V5', configuration: feed.error ? 'Upstream unavailable' : feed.data ? 'Upstream reachable' : 'Checking upstream' }
-        ]} columns={['source', 'region', 'configuration']} />}
+        ]} columns={['source', 'region', 'configuration']} /></>}
       </div>
     </main>
   </div>;

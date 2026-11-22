@@ -58,14 +58,20 @@ export async function registerApiRoutes(
   app.get('/api/v1/connectors', async () => ({
     crowdStrike: {
       configured: dependencies.crowdStrike.configured,
-      region: 'US-2',
-      baseUrl: 'https://api.us-2.crowdstrike.com',
+      region: new URL(dependencies.crowdStrike.baseUrl).hostname,
+      baseUrl: dependencies.crowdStrike.baseUrl,
       strategy: 'TARGETED_APPLICATION_LOOKUP'
     },
     postgresql: { configured: true },
     cisaKev: { configured: true },
     epss: { configured: true }
   }));
+  app.post('/api/v1/connectors/crowdstrike/check', async (_request, reply) => {
+    try { return await dependencies.crowdStrike.checkAuthentication(); }
+    catch (error) {
+      return reply.code(502).send({ message: error instanceof Error ? error.message : 'Falcon authentication check failed.' });
+    }
+  });
 
   app.post('/api/v1/crowdstrike/applications/search', async (request, reply) => {
     const parsed = crowdStrikeSearchSchema.safeParse(request.body);

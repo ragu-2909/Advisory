@@ -8,12 +8,13 @@ import type { NvdConnector } from '../connectors/nvd.js';
 import type { CrowdStrikeConnector } from '../connectors/crowdstrike.js';
 import { selectCvss } from '../domain/cvss-selector.js';
 import { evaluateRisk } from '../domain/risk-policy.js';
-import { matchVersion } from '../domain/version-match.js';
+import { discoverProducts, matchTarget } from './product-discovery.js';
 
 type Step = { name: string; status: 'Running' | 'Complete' | 'Unavailable'; detail?: string };
 type Run = {
   id: string; cveId: string; done: boolean; steps: Step[];
   assets: Array<{ product: string; version?: string; host: string; result: string; exposure: boolean | null }>;
+  products: Array<{ product: string; relationship: string; source: string; versions: string; inventory: string }>;
   incomplete: boolean;
 };
 
@@ -29,7 +30,7 @@ export class AssessmentService {
   start(cveId: string) {
     if ([...this.runs.values()].some(run => !run.done)) return;
     if (this.runs.size >= 20) this.runs.delete(this.runs.keys().next().value!);
-    const run: Run = { id: randomUUID(), cveId, done: false, steps: [], assets: [], incomplete: false };
+    const run: Run = { id: randomUUID(), cveId, done: false, steps: [], assets: [], products: [], incomplete: false };
     this.runs.set(run.id, run);
     void this.execute(run).catch(() => {
       run.incomplete = true;
@@ -69,27 +70,40 @@ export class AssessmentService {
     const selected = selectCvss([...record.metrics, ...(nvd?.metrics ?? [])]);
     await step('CVSS selection', async () => selected,
       data => data ? `${data.baseScore} · CVSS ${data.version} · ${data.provider ?? data.source}` : 'No usable CVSS 4.0 or 3.1 score');
-    if (!record.affected.length) {
+    const discovery = await step('Product and dependency research', () => discoverProducts(record, nvd?.raw),
+      data => `${data.targets.length} product records. ${data.warnings.join(' ')}`);
+    if (!discovery?.targets.length) {
       run.steps.push({ name: 'CrowdStrike', status: 'Unavailable', detail: 'The CVE has no searchable product entries.' });
       return;
     }
-    for (const product of record.affected.slice(0, 10)) {
+    run.incomplete ||= discovery.warnings.length > 0 || discovery.targets.length > 20;
+    run.products = discovery.targets.map(target => {
+      const { product } = target;
       const label = [product.vendor, product.product].filter(Boolean).join(' ');
-      await step(`Published versions · ${label}`, async () => product.versions, versions =>
-        versions.map(v => [v.version, v.lessThan && `< ${v.lessThan}`, v.lessThanOrEqual && `≤ ${v.lessThanOrEqual}`, v.status].filter(Boolean).join(' ')).join(', ') || 'Unspecified');
-      await step(`CrowdStrike · ${label}`, async () => {
-        if (!this.crowdStrike.configured) throw new Error('Set both CrowdStrike credential fields and restart the API.');
-        const applications = await this.crowdStrike.searchApplications({ name: product.product });
+      const versions = product.versions.map(v => [v.version, v.lessThan && `< ${v.lessThan}`, v.lessThanOrEqual && `≤ ${v.lessThanOrEqual}`, v.status].filter(Boolean).join(' ')).join(', ');
+      return { product: label, relationship: target.relationship, source: target.source, versions: versions || 'Unverified', inventory: 'Pending' };
+    });
+    const auth = await step('CrowdStrike authentication', () => this.crowdStrike.checkAuthentication(), result => result.baseUrl);
+    const searches = new Map<string, ReturnType<CrowdStrikeConnector['searchApplications']>>();
+    for (const [index, target] of discovery.targets.entries()) {
+      const row = run.products[index]!;
+      if (!auth || index >= 20) {
+        row.inventory = auth ? 'Lookup limit reached' : 'Authentication unavailable';
+        continue;
+      }
+      const matches = await step(`CrowdStrike · ${row.product}`, async () => {
+        const lookup = searches.get(target.searchName) ?? this.crowdStrike.searchApplications({ name: target.searchName });
+        searches.set(target.searchName, lookup);
+        const applications = await lookup;
         for (const app of applications) {
-          const exact = app.name.trim().toLowerCase() === product.product.trim().toLowerCase()
-            && (!product.vendor || app.vendor?.trim().toLowerCase() === product.vendor.trim().toLowerCase());
           run.assets.push({
             product: app.name, version: app.version, host: String(app.host?.hostname ?? app.hostId),
-            result: exact ? matchVersion(product, app.version) : 'REVIEW', exposure: app.exposure
+            result: matchTarget(target, app), exposure: app.exposure
           });
         }
         return applications;
       }, apps => `${apps.length} application inventory entries · ${apps.filter(app => app.host).length} host records resolved`);
+      row.inventory = matches ? `${matches.length} entries` : 'Lookup unavailable';
     }
     await step('Alert preview', async () => {
       const affected = run.assets.filter(asset => asset.result === 'AFFECTED');

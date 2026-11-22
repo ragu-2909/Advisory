@@ -37,7 +37,14 @@ export class CrowdStrikeConnector {
   constructor(private readonly config: AppConfig) {}
 
   get configured(): boolean {
-    return Boolean(this.config.CROWDSTRIKE_CLIENT_ID && this.config.CROWDSTRIKE_CLIENT_SECRET);
+    return Boolean(this.config.CROWDSTRIKE_CLIENT_ID?.trim() && this.config.CROWDSTRIKE_CLIENT_SECRET?.trim());
+  }
+
+  get baseUrl() { return this.config.CROWDSTRIKE_BASE_URL.replace(/\/+$/, ''); }
+
+  async checkAuthentication() {
+    await this.getToken(true);
+    return { status: 'Authenticated', baseUrl: this.baseUrl };
   }
 
   async searchApplications(input: ApplicationSearch): Promise<CrowdStrikeApplicationMatch[]> {
@@ -73,32 +80,49 @@ export class CrowdStrikeConnector {
     });
   }
 
-  private async getToken(): Promise<string> {
-    if (this.token && this.token.expiresAt > Date.now() + 60_000) return this.token.value;
+  private async getToken(force = false): Promise<string> {
+    if (!this.configured) throw new Error('Set both CrowdStrike credential fields and restart the API.');
+    if (!force && this.token && this.token.expiresAt > Date.now() + 60_000) return this.token.value;
     const body = new URLSearchParams({
-      client_id: this.config.CROWDSTRIKE_CLIENT_ID!,
-      client_secret: this.config.CROWDSTRIKE_CLIENT_SECRET!
+      client_id: this.config.CROWDSTRIKE_CLIENT_ID!.trim(),
+      client_secret: this.config.CROWDSTRIKE_CLIENT_SECRET!.trim()
     });
-    const token = await fetchJson<TokenResponse>(`${this.config.CROWDSTRIKE_BASE_URL}/oauth2/token`, {
+    const token = await fetchJson<TokenResponse>(`${this.baseUrl}/oauth2/token`, {
       method: 'POST',
+      redirect: 'error',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body
+    }).catch(error => {
+      if (!(error instanceof HttpError)) throw new Error(`Falcon OAuth connection failed at ${this.baseUrl}. Check DNS, TLS and outbound access.`);
+      const hint = [400, 401, 403].includes(error.status)
+        ? ' Check that this active API client ID and secret are from the same Falcon cloud and that the service loaded the current values.'
+        : '';
+      throw new Error(`Falcon OAuth token request returned HTTP ${error.status} at ${this.baseUrl}.${hint}`);
     });
+    if (!token.access_token || !Number.isFinite(token.expires_in)) throw new Error('Falcon OAuth did not return a usable access token.');
     this.token = { value: token.access_token, expiresAt: Date.now() + token.expires_in * 1_000 };
     return token.access_token;
   }
 
   private async request(path: string, init: RequestInit = {}): Promise<z.infer<typeof falconEnvelope>> {
-    const execute = async () => fetchJson<unknown>(`${this.config.CROWDSTRIKE_BASE_URL}${path}`, {
-      ...init,
-      headers: { authorization: `Bearer ${await this.getToken()}`, ...(init.headers ?? {}) }
-    });
+    const execute = async () => {
+      const token = await this.getToken();
+      return falconEnvelope.parse(await fetchJson<unknown>(`${this.baseUrl}${path}`, {
+        ...init, redirect: 'error',
+        headers: { authorization: `Bearer ${token}`, ...(init.headers ?? {}) }
+      }));
+    };
     try {
-      return falconEnvelope.parse(await execute());
-    } catch (error) {
-      if (error instanceof HttpError && error.status === 401) {
+      try { return await execute(); }
+      catch (error) {
+        if (!(error instanceof HttpError) || error.status !== 401) throw error;
         this.token = undefined;
-        return falconEnvelope.parse(await execute());
+        return await execute();
+      }
+    } catch (error) {
+      if (error instanceof HttpError) {
+        const scope = path.startsWith('/discover/') ? 'Falcon Discover: Read' : 'Hosts: Read';
+        throw new Error(`Falcon ${path.split('?')[0]} returned HTTP ${error.status} after authentication. Check ${scope} and tenant access.`);
       }
       throw error;
     }
@@ -156,7 +180,7 @@ export function buildApplicationFilter(input: ApplicationSearch): string {
 }
 
 function escapeFql(value: string): string {
-  return value.replace(/[\\']/g, (character) => `\\${character}`).replace(/[\r\n]/g, ' ').trim();
+  return value.replace(/[\\'*]/g, (character) => `\\${character}`).replace(/[\r\n]/g, ' ').trim();
 }
 
 function getHostId(application: Record<string, unknown>): string | undefined {

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { matchVersion } from '../domain/version-match.js';
+import { discoverProducts, matchTarget } from './product-discovery.js';
 import type { DatabasePool } from '../db/pool.js';
 import type { AppConfig } from '../config.js';
 import type { CrowdStrikeConnector } from '../connectors/crowdstrike.js';
@@ -10,20 +10,21 @@ import type { CvssMetric } from '../domain/types.js';
 export class CorrelationService {
   constructor(private readonly db: DatabasePool, private readonly crowdStrike: CrowdStrikeConnector, private readonly config: AppConfig) {}
 
-  async evaluate(record: ParsedCveRecord, selectedCvss?: CvssMetric): Promise<{ matches: number; alert?: string }> {
+  async evaluate(record: ParsedCveRecord, selectedCvss?: CvssMetric, nvd?: Record<string, unknown>): Promise<{ matches: number; alert?: string }> {
     if (!this.crowdStrike.configured) return { matches: 0 };
     const kevResult = await this.db.query<{ due_date?: string; required_action?: string; known_ransomware_campaign_use?: string }>('SELECT * FROM kev_entries WHERE cve_id=$1', [record.cveId]);
     const kev = kevResult.rows[0];
     if (!kev && (selectedCvss?.baseScore ?? 0) < 9) return { matches: 0 };
 
     const allMatches = [];
-    for (const affected of distinctProducts(record.affected)) {
-      const matches = await this.crowdStrike.searchApplications({ name: affected.product, vendor: usableVendor(affected.vendor) });
-      allMatches.push(...matches.filter(match =>
-        match.name.trim().toLowerCase() === affected.product.trim().toLowerCase()
-        && (!usableVendor(affected.vendor) || match.vendor?.trim().toLowerCase() === affected.vendor?.trim().toLowerCase())
-        && matchVersion(affected, match.version) === 'AFFECTED'
-      ).map((match) => ({ ...match, affected })));
+    const discovery = await discoverProducts(record, nvd);
+    const searches = new Map<string, Awaited<ReturnType<CrowdStrikeConnector['searchApplications']>>>();
+    for (const target of discovery.targets) {
+      if (target.relationship === 'NVD inventory candidate' || !target.product.versions.some(version => version.status === 'affected')) continue;
+      const matches = searches.get(target.searchName) ?? await this.crowdStrike.searchApplications({ name: target.searchName });
+      searches.set(target.searchName, matches);
+      allMatches.push(...matches.filter(match => matchTarget(target, match) === 'AFFECTED')
+        .map(match => ({ ...match, affected: target.product, source: target.source })));
     }
 
     for (const match of allMatches) {
@@ -33,7 +34,7 @@ export class CorrelationService {
          ON CONFLICT(cve_id,source,external_application_id,host_id) DO UPDATE SET
            installed_version=EXCLUDED.installed_version, architecture=EXCLUDED.architecture,
            installation_paths=EXCLUDED.installation_paths, evidence=EXCLUDED.evidence, observed_at=now()`,
-        [record.cveId, match.applicationId, match.hostId, match.name, match.vendor, match.version, match.architecture, JSON.stringify(match.installationPaths), { application: match.application, affected: match.affected }]
+        [record.cveId, match.applicationId, match.hostId, match.name, match.vendor, match.version, match.architecture, JSON.stringify(match.installationPaths), { application: match.application, affected: match.affected, source: match.source }]
       );
       if (match.host) {
         await this.db.query(
