@@ -11,6 +11,7 @@
     "dev": "concurrently -n api,web -c blue,cyan \"npm run dev:api\" \"vite --config web/vite.config.ts\"",
     "dev:api": "node --env-file-if-exists=.env --import tsx --watch src/index.ts",
     "build": "tsc -p tsconfig.server.json && vite build --config web/vite.config.ts",
+    "start:lan": "node --env-file-if-exists=.env scripts/start-lan.mjs",
     "start": "node --env-file-if-exists=.env dist/server/src/index.js",
     "db:migrate": "node --env-file-if-exists=.env --import tsx scripts/migrate.ts",
     "test": "vitest run",
@@ -20,6 +21,7 @@
   "dependencies": {
     "@fastify/cors": "^11.1.0",
     "@fastify/static": "^10.1.12",
+    "exceljs": "^4.4.0",
     "fast-xml-parser": "^5.3.1",
     "fastify": "^5.6.2",
     "lucide-react": "^0.468.0",

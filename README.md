@@ -97,3 +97,11 @@ npm audit --omit=dev
 No CrowdStrike client ID or secret is required for compilation or unit tests.
 
 "# Advisory" 
+
+## Assessment email and automation
+
+POST a JSON body such as `{"cveId":"CVE-2026-11497"}` to `/api/v1/assessments`. Use the returned `id` in GET `/api/v1/assessments/{id}/email`. Poll while the status is HTTP 202. On HTTP 200, use the JSON field `subject` for the email subject and `body.html` for the HTML body. The assessment preview is also available on the Assessment tab. The service holds the most recent 20 runs in memory. A restart clears those runs. For a persisted alert use GET `/api/v1/alerts/{id}/email` with the alert UUID.
+
+Use Data sources to import the first worksheet of an XLSX inventory. The required headers are hostname, product, version and vendor. Optional fields include architecture, ip and internetFacing (true or false). For an autosaved SharePoint workbook, configure a Power Automate file-modified trigger scoped to that file, get its latest file content and PUT its binary content to `/api/v1/inventories/{name}` as `application/octet-stream`. Use a stable name and serialize flow runs to keep the latest snapshot. The flow requires a network path to the server. Settings and snapshots are saved under the service working directory in data/.
+
+On the Windows server, run `npm run build`, then `npm run start:lan` to serve the production UI and API together. Open http://SERVER-IP:4100/ from an authorized workstation. Set ADVISORY_LAN_ADDRESS to bind a specific interface. The API includes writable settings and host inventory, so restrict inbound access to trusted clients or place it behind an authenticated HTTPS proxy. GET /health and GET /api/v1/health check PostgreSQL connectivity.

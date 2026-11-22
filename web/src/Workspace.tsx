@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Activity, Bell, Database, Download, FileWarning, LayoutDashboard, Play, Server, ShieldCheck } from 'lucide-react';
+import { Controls } from './Controls';
 import type { Overview } from './types';
 
 type Row = Record<string, string | number | boolean | null | undefined>;
@@ -8,10 +9,11 @@ type Run = {
   steps: Array<{ name: string; status: string; detail?: string }>;
   assets: Row[];
   products?: Row[];
+  email?: {subject:string;body:{html:string}};
 };
 const views = [
   ['Assessment', Play], ['Overview', LayoutDashboard], ['Findings', FileWarning],
-  ['Affected assets', Server], ['Alert delivery', Bell], ['Intelligence feeds', Activity], ['Data sources', Database]
+  ['Affected assets', Server], ['Alert delivery', Bell], ['Intelligence feeds', Activity], ['Data sources', Database], ['Settings', Activity]
 ] as const;
 type View = typeof views[number][0];
 
@@ -79,14 +81,15 @@ function Records({ title, rows, columns, onSelectCve, empty = 'No records to dis
 
 export default function Workspace() {
   const [view, setView] = useState<View>('Assessment');
-  const [input, setInput] = useState('CVE-2026-111497');
+  const [input, setInput] = useState('CVE-2026-11497');
   const [initial, setInitial] = useState<Run>();
   const [starting, setStarting] = useState(false);
   const [failure, setFailure] = useState('');
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('All');
   const [falconCheck, setFalconCheck] = useState<{ running: boolean; message?: string; failed?: boolean }>({ running: false });
-  const assessment = usePolling<Run>(initial?.done ? undefined : initial && `assessments/${initial.id}`, 1000);
+  const [runId, setRunId] = useState(() => sessionStorage.getItem('advisoryAssessment') ?? '');
+  const assessment = usePolling<Run>(initial?.done || !runId ? undefined : 'assessments/' + runId, 1000);
   const run = assessment.data ?? initial;
   useEffect(() => {
     if (assessment.data?.done) setInitial(assessment.data);
@@ -101,10 +104,13 @@ export default function Workspace() {
     setStarting(true);
     setFailure('');
     try {
-      setInitial(await api<Run>('assessments', {
+      const started = await api<Run>('assessments', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ cveId: input })
-      }));
+      });
+      setInitial(started);
+      setRunId(started.id);
+      sessionStorage.setItem('advisoryAssessment', started.id);
     } catch (error) { setFailure((error as Error).message); }
     finally { setStarting(false); }
   }
@@ -155,7 +161,11 @@ export default function Workspace() {
                 <li key={index}><span className={`step-status ${step.status.toLowerCase()}`}>{step.status}</span><div><strong>{step.name}</strong>{step.detail && <p>{step.detail}</p>}</div></li>)}</ol>
             </section>
             <Records title="Products and bundled dependencies" rows={run.products} columns={['product', 'relationship', 'versions', 'inventory', 'source']} empty="No product evidence yet. See the research steps above." />
-            <Records title="Inventory evidence" rows={run.assets} columns={['product', 'version', 'host', 'result', 'exposure', 'hostLookup']} empty={run.done ? 'No inventory evidence returned. See the CrowdStrike step for coverage and errors.' : 'Waiting for CrowdStrike evidence…'} />
+            <Records title="Inventory evidence" rows={run.assets} columns={['product', 'version', 'host', 'result', 'exposure', 'ip', 'os', 'lastSeen', 'sensorState', 'source', 'hostLookup']} empty={run.done ? 'No inventory evidence returned. See the CrowdStrike step for coverage and errors.' : 'Waiting for CrowdStrike evidence…'} />
+            {run.email && <section className="panel assessment-form"><h2>Email preview</h2><p><strong>{run.email.subject}</strong></p>
+              <iframe title="Advisory email body" sandbox="" style={{width:'100%',minHeight:240,background:'white'}} srcDoc={run.email.body.html}/>
+              <details><summary>HTML body</summary><textarea aria-label="HTML body" readOnly value={run.email.body.html} style={{width:'100%'}} /></details>
+              <a href={'/api/v1/assessments/'+run.id+'/email'}>Open workflow JSON</a></section>}
           </>}
         </>}
         {view === 'Overview' && <>
@@ -175,7 +185,8 @@ export default function Workspace() {
           <Records title="CVE List V5 changes" rows={feed.data?.records} onSelectCve={selectCve} columns={['cveId', 'change']} empty="The current upstream batch has no changes." />
           <Records title="Processing status" rows={overview.data?.feeds.map(item => ({ ...item }))} columns={['feed', 'status', 'completedAt', 'recordsProcessed', 'errorSummary']} />
         </>}
-        {view === 'Data sources' && <><div><button className="button primary" onClick={checkFalcon} disabled={falconCheck.running}>{falconCheck.running ? 'Checking…' : 'Check CrowdStrike authentication'}</button></div>
+        {view === 'Settings' && <Controls key="settings" inventory={false} />}
+        {view === 'Data sources' && <><Controls key="inventory" inventory /><div><button className="button primary" onClick={checkFalcon} disabled={falconCheck.running}>{falconCheck.running ? 'Checking…' : 'Check CrowdStrike authentication'}</button></div>
           {falconCheck.message && <p className={`action-toast ${falconCheck.failed ? 'error' : 'success'}`} role="status">{falconCheck.message}</p>}
           <Records title="Connector configuration" rows={status.data && [
           { source: 'CrowdStrike Falcon', region: status.data.crowdStrike.region, configuration: status.data.crowdStrike.configured ? 'Credentials loaded · run an assessment to check access' : 'Client ID or secret missing' },

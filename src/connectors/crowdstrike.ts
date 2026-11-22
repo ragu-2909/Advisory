@@ -98,6 +98,12 @@ export class CrowdStrikeConnector {
     });
   }
 
+  async onlineStates(ids: string[]) {
+    return this.resolveHosts(ids, 'Sensor online state', batch =>
+      this.request('/devices/entities/online-state/v1?' + new URLSearchParams(batch.map(id => ['ids', id]))),
+      'id', 100);
+  }
+
   private async getToken(force = false): Promise<string> {
     if (!this.configured) throw new Error('Set both CrowdStrike credential fields and restart the API.');
     if (!force && this.token && this.token.expiresAt > Date.now() + 60_000) return this.token.value;

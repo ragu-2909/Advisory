@@ -2,6 +2,8 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import cron from 'node-cron';
+import { z } from 'zod';
+import { readSetting, saveSetting } from './services/workspace-settings.js';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
@@ -32,11 +34,32 @@ if (config.NODE_ENV === 'production') {
   app.get('/*', async (_request, reply) => reply.sendFile('index.html'));
 }
 
-if (config.ENABLE_SCHEDULERS) {
-  cron.schedule(config.KEV_CRON, () => void feeds.syncKev().catch((error) => app.log.error(error, 'CISA KEV sync failed')));
-  cron.schedule(config.EPSS_CRON, () => void feeds.refreshEpss().catch((error) => app.log.error(error, 'EPSS refresh failed')));
-  cron.schedule(config.CVE_CRON, () => void cves.sync().catch((error) => app.log.error(error, 'CVE List V5 sync failed')), { noOverlap: true });
+const jobs = { cve: () => cves.sync(), kev: () => feeds.syncKev(), epss: () => feeds.refreshEpss() };
+const schedule = z.object({ enabled:z.boolean(), expression:z.string().refine(value => cron.validate(value)) });
+const schema = z.object({ cve:schedule, kev:schedule, epss:schedule });
+let schedules = schema.parse(await readSetting('schedules', Object.fromEntries(
+  Object.entries({cve:config.CVE_CRON, kev:config.KEV_CRON, epss:config.EPSS_CRON}).map(([key,expression]) => [key,{enabled:config.ENABLE_SCHEDULERS,expression}]))));
+let tasks: ReturnType<typeof cron.schedule>[] = [];
+function applySchedules() {
+  for (const task of tasks) task.destroy();
+  tasks = [];
+  for (const key of Object.keys(jobs) as (keyof typeof jobs)[]) {
+    const rule = schedules[key];
+    if (rule.enabled) tasks.push(cron.schedule(rule.expression, async () => {
+      try { await jobs[key](); } catch (error) { app.log.error(error, key + ' sync failed'); }
+    }, {noOverlap:true}));
+  }
 }
+applySchedules();
+app.get('/api/v1/settings/schedules', async () => schedules);
+app.put('/api/v1/settings/schedules', async (req,reply) => {
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) return reply.code(400).send({message:'Enter valid cron expressions for each feed.'});
+  await saveSetting('schedules',parsed.data);
+  schedules = parsed.data;
+  applySchedules();
+  return schedules;
+});
 
 const close = async () => { await app.close(); await db.end(); };
 process.on('SIGINT', () => void close());

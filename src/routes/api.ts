@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { inventories, importInventory, sourceName } from '../services/workspace-settings.js';
 import type { DatabasePool } from '../db/pool.js';
 import type { CrowdStrikeConnector } from '../connectors/crowdstrike.js';
 import type { FeedService } from '../services/feed-service.js';
@@ -27,8 +28,26 @@ export async function registerApiRoutes(
   dependencies: { db: DatabasePool; crowdStrike: CrowdStrikeConnector; feeds: FeedService; cves: CveIngestionService; assessments: AssessmentService }
 ) {
   const dashboard = new DashboardService(dependencies.db);
+  app.addContentTypeParser('application/octet-stream', { parseAs:'buffer', bodyLimit: 4*1024*1024 }, (_req, body, done) => done(null, body));
+  app.get('/api/v1/inventories', async () => (await inventories()).map(f => ({ name:f.name, updated:f.updated, rows:f.rows.length })));
+  app.put<{ Params:{name:string} }>('/api/v1/inventories/:name', async (req, reply) => {
+    if (!sourceName.safeParse(req.params.name).success || !Buffer.isBuffer(req.body)) return reply.code(400).send({message:'Supply an inventory name and an XLSX workbook.'});
+    try { return await importInventory(req.params.name,req.body); }
+    catch { return reply.code(400).send({message:'Could not import XLSX. Check the first sheet, required columns, and row limit.'}); }
+  });
+  app.get<{Params:{id:string}}>('/api/v1/assessments/:id/email', async (req, reply) => {
+    const run = dependencies.assessments.get(req.params.id);
+    if (!run) return reply.code(404).send({message:'Assessment expired or unknown.'});
+    if (!run.done) return reply.code(202).send({status:'Running'});
+    return run.email;
+  });
+  app.get<{Params:{id:string}}>('/api/v1/alerts/:id/email', async (req, reply) => {
+    if (!z.string().uuid().safeParse(req.params.id).success) return reply.code(400).send({message:'Invalid alert ID'});
+    const result = await dependencies.db.query('SELECT subject,mail_body AS body FROM alerts WHERE id=$1',[req.params.id]);
+    return result.rows[0] ?? reply.code(404).send({message:'Unknown alert'});
+  });
 
-  app.get('/api/v1/health', async () => {
+  for (const path of ['/health', '/api/v1/health']) app.get(path, async () => {
     await dependencies.db.query('SELECT 1');
     return { status: 'ok', time: new Date().toISOString() };
   });
