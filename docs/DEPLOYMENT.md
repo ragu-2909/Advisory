@@ -27,8 +27,8 @@ The connector is fixed to the confirmed US-2 origin by default. It performs:
 
 1. filtered `GET /discover/queries/applications/v1` requests;
 2. batched `GET /discover/entities/applications/v1` requests;
-3. `host.id` deduplication;
-4. batched `POST /devices/entities/devices/v2` host resolution.
+3. batched `POST /devices/entities/devices/v2` for Falcon sensor IDs from `host.aid`;
+4. batched `GET /discover/entities/hosts/v1` for Discover asset IDs from `host.id` when sensor lookup is unavailable.
 
 It never downloads the entire application inventory. Authentication failures cause one token refresh and retry. Other errors remain failures/unknown states and cannot be interpreted as “not affected.”
 

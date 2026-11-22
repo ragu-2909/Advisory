@@ -26,6 +26,7 @@ export interface CrowdStrikeApplicationMatch {
   installationPaths: string[];
   application: Record<string, unknown>;
   host?: Record<string, unknown>;
+  hostResolutionIssue?: string;
   exposure: true | false | null;
 }
 
@@ -57,14 +58,28 @@ export class CrowdStrikeConnector {
     if (applications.length !== applicationIds.length || applications.some(app => !getHostId(app))) {
       throw new Error('Falcon returned incomplete application or host identifiers.');
     }
-    const hostIds = [...new Set(applications.map(getHostId).filter((id): id is string => Boolean(id)))];
-    const hosts = await this.getHostEntities(hostIds);
-    const hostById = new Map(hosts.map((host) => [String(host.device_id ?? host.id ?? ''), host]));
+    const aids = applications.map(getAgentId).filter(isString);
+    const sensorHosts = await this.resolveHosts(aids, 'Hosts', async ids =>
+      this.request('/devices/entities/devices/v2', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids })
+      }), 'device_id', 5000);
+    const discoveryIds = applications
+      .filter(app => !sensorHosts.hosts.has(getAgentId(app) ?? ''))
+      .map(app => optionalString(applicationHost(app)?.id)).filter(isString);
+    const discoverHosts = await this.resolveHosts(discoveryIds, 'Discover hosts', ids =>
+      this.request(`/discover/entities/hosts/v1?${new URLSearchParams(ids.map(id => ['ids', id]))}`), 'id', 100);
 
     return applications.flatMap((application) => {
       const hostId = getHostId(application);
       if (!hostId) return [];
-      const host = hostById.get(hostId);
+      const aid = getAgentId(application);
+      const assetId = optionalString(applicationHost(application)?.id);
+      const discovered = assetId ? discoverHosts.hosts.get(assetId) : undefined;
+      const host = sensorHosts.hosts.get(aid ?? '') ?? (discovered && {
+        ...discovered,
+        local_ip: discovered.local_ip ?? discovered.current_local_ip,
+        last_seen: discovered.last_seen ?? discovered.last_seen_timestamp
+      });
       return [{
         applicationId: String(application.id ?? ''),
         hostId,
@@ -75,6 +90,9 @@ export class CrowdStrikeConnector {
         installationPaths: stringArray(application.installation_paths),
         application,
         host,
+        hostResolutionIssue: host ? undefined : [
+          aid && sensorHosts.issues.get(aid), assetId && discoverHosts.issues.get(assetId)
+        ].filter(Boolean).join(' ') || 'Falcon returned no host details for this installation.',
         exposure: explicitExposure(application, host)
       }];
     });
@@ -122,7 +140,9 @@ export class CrowdStrikeConnector {
     } catch (error) {
       if (error instanceof HttpError) {
         const scope = path.startsWith('/discover/') ? 'Falcon Discover: Read' : 'Hosts: Read';
-        throw new Error(`Falcon ${path.split('?')[0]} returned HTTP ${error.status} after authentication. Check ${scope} and tenant access.`);
+        const hint = error.status === 400 ? ' Falcon rejected the request parameters.'
+          : [401, 403].includes(error.status) ? ` Check ${scope} and tenant access.` : '';
+        throw new Error(`Falcon ${path.split('?')[0]} returned HTTP ${error.status} after authentication.${hint}`);
       }
       throw error;
     }
@@ -156,17 +176,29 @@ export class CrowdStrikeConnector {
     return entities;
   }
 
-  private async getHostEntities(ids: string[]): Promise<Record<string, unknown>[]> {
-    const entities: Record<string, unknown>[] = [];
-    for (const batch of chunks(ids, 5_000)) {
-      const envelope = await this.request('/devices/entities/devices/v2', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ids: batch })
-      });
-      entities.push(...envelope.resources.filter(isRecord));
+  private async resolveHosts(
+    ids: string[], label: string, lookup: (ids: string[]) => ReturnType<CrowdStrikeConnector['request']>,
+    key: 'device_id' | 'id', batchSize: number
+  ) {
+    const hosts = new Map<string, Record<string, unknown>>();
+    const issues = new Map<string, string>();
+    for (const batch of chunks([...new Set(ids)], batchSize)) {
+      try {
+        const envelope = await lookup(batch);
+        for (const host of envelope.resources.filter(isRecord)) {
+          const id = optionalString(host[key]);
+          if (id) hosts.set(id, host);
+        }
+        for (const id of batch) {
+          if (!hosts.has(id)) issues.set(id, `${label} returned no matching host details.`);
+        }
+      } catch (error) {
+        const message = error instanceof Error && error.message.startsWith('Falcon ')
+          ? error.message : `${label} lookup failed.`;
+        for (const id of batch) issues.set(id, message);
+      }
     }
-    return entities;
+    return { hosts, issues };
   }
 }
 
@@ -184,9 +216,11 @@ function escapeFql(value: string): string {
 }
 
 function getHostId(application: Record<string, unknown>): string | undefined {
-  const host = isRecord(application.host) ? application.host : undefined;
-  return host ? optionalString(host.id) : undefined;
+  return optionalString(applicationHost(application)?.id) ?? getAgentId(application);
 }
+function applicationHost(application: Record<string, unknown>) { return isRecord(application.host) ? application.host : undefined; }
+function getAgentId(application: Record<string, unknown>) { return optionalString(applicationHost(application)?.aid); }
+function isString(value: string | undefined): value is string { return Boolean(value); }
 
 function explicitExposure(application: Record<string, unknown>, host?: Record<string, unknown>): true | false | null {
   const applicationHost = isRecord(application.host) ? application.host : undefined;

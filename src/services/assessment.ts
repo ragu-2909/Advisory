@@ -13,7 +13,7 @@ import { discoverProducts, matchTarget } from './product-discovery.js';
 type Step = { name: string; status: 'Running' | 'Complete' | 'Unavailable'; detail?: string };
 type Run = {
   id: string; cveId: string; done: boolean; steps: Step[];
-  assets: Array<{ product: string; version?: string; host: string; result: string; exposure: boolean | null }>;
+  assets: Array<{ product: string; version?: string; host: string; result: string; exposure: boolean | null; hostLookup: string }>;
   products: Array<{ product: string; relationship: string; source: string; versions: string; inventory: string }>;
   incomplete: boolean;
 };
@@ -98,12 +98,20 @@ export class AssessmentService {
         for (const app of applications) {
           run.assets.push({
             product: app.name, version: app.version, host: String(app.host?.hostname ?? app.hostId),
-            result: matchTarget(target, app), exposure: app.exposure
+            result: matchTarget(target, app), exposure: app.exposure,
+            hostLookup: app.hostResolutionIssue ?? 'Resolved'
           });
         }
         return applications;
-      }, apps => `${apps.length} application inventory entries · ${apps.filter(app => app.host).length} host records resolved`);
-      row.inventory = matches ? `${matches.length} entries` : 'Lookup unavailable';
+      }, apps => {
+        const issues = [...new Set(apps.flatMap(app => app.hostResolutionIssue ? [app.hostResolutionIssue] : []))];
+        if (issues.length) run.incomplete = true;
+        const resolved = new Set(apps.filter(app => app.host).map(app => app.hostId)).size;
+        return [`${apps.length} application inventory entries · ${resolved} host records resolved`, ...issues].join(' · ');
+      });
+      row.inventory = matches
+        ? `${matches.length} entries${matches.some(app => app.hostResolutionIssue) ? ' · partial host details' : ''}`
+        : 'Lookup unavailable';
     }
     await step('Alert preview', async () => {
       const affected = run.assets.filter(asset => asset.result === 'AFFECTED');

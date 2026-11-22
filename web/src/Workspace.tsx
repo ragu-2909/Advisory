@@ -155,7 +155,7 @@ export default function Workspace() {
                 <li key={index}><span className={`step-status ${step.status.toLowerCase()}`}>{step.status}</span><div><strong>{step.name}</strong>{step.detail && <p>{step.detail}</p>}</div></li>)}</ol>
             </section>
             <Records title="Products and bundled dependencies" rows={run.products} columns={['product', 'relationship', 'versions', 'inventory', 'source']} empty="No product evidence yet. See the research steps above." />
-            <Records title="Inventory evidence" rows={run.assets} columns={['product', 'version', 'host', 'result', 'exposure']} empty={run.done ? 'No inventory evidence returned. See the CrowdStrike step for coverage and errors.' : 'Waiting for CrowdStrike evidence…'} />
+            <Records title="Inventory evidence" rows={run.assets} columns={['product', 'version', 'host', 'result', 'exposure', 'hostLookup']} empty={run.done ? 'No inventory evidence returned. See the CrowdStrike step for coverage and errors.' : 'Waiting for CrowdStrike evidence…'} />
           </>}
         </>}
         {view === 'Overview' && <>
